@@ -26,14 +26,14 @@ This gem revolves around the `TraceId` class, which has four methods.  The two y
 
 * `TraceId.get_or_initialize` - returns the current Trace Id for the current thread or generates a new one and stores that for the future
 * `TraceId.reset!` - changes or sets the value to a new generated one.  This is useful in a rake task or background job not initiated by a web
-request.
+request. Or to change the trace id for a "fan-out" batch operation (see below)
 
 The other two methods, for completeness:
 
 * `TraceId.get` - returns the current Trace Id or `nil` if there isn't one
 * `TraceId.set` - sets the value. This is useful in a controller.
 
-## Hooking Up To Your Rails App
+## Using in Your Rails App
 
 There are four classes you can use to make it easier to integrate this into your Rails app.
 
@@ -109,9 +109,138 @@ end
 
 Then, when you call `log`, the trace id will be included.
 
-### Contributing
+### Making Trace Id Useful for Batch Jobs
 
-Happy to look at an accept:
+One issue that can happen if you have a batch job and have arranged for the trace id to be persisted acorss jobs is that you have a trace id that shows up in
+tons and tons of operations.  For example, if you examine all active customers and queue a job for each one that will send them a welcome email if they haven't
+been given one, you might write something like this:
+
+```ruby
+class ActiveCustomers
+
+  include TraceId::Method # provides the `trace_id` method
+
+  def ensure_welcome_emails
+    Customer.where(active: true).find_each do |customer|
+      Rails.logger.info "[#{trace_id}] queuing job for active Customer #{customer.id}"
+      SendWelcomeEmailIfNeededJob.perform_later(customer.id)
+    end
+  end
+
+  def send_welcome_email_if_needed(customer)
+    Rails.logger.info "[#{trace_id}] checking Customer #{customer.id}"
+    if customer.emails.welcome.any?
+      Rails.logger.info "[#{trace_id}] Customer #{customer.id} already got the welcome email"
+    else
+      Rails.logger.info "[#{trace_id}] Sending Customer #{customer.id} the welcome email"
+      # send the welcome email
+    end
+  end
+end
+
+class SendWelcomeEmailIfNeededJob
+
+  include TraceId::Method
+
+  def perform(customer_id)
+    Rails.logger.info "[#{trace_id}] perform(#{customer_id})"
+    customer = Customer.find(customer_id)
+    ActiveCustomers.new.send_welcome_email_if_needed(customer)
+  end
+end
+```
+
+Suppose you have four active customers how have the IDs 1, 2, 3, and 4.  Suppose customer's 1 and 4 have not received welcome emails (2 and 3 have).  Suppose that the first called to `trace_id` generated the trace id `original-trace-id`.
+Your logs will look like so:
+
+```
+[original-trace-id] queuing job for active Customer 1
+[original-trace-id] queuing job for active Customer 2
+[original-trace-id] queuing job for active Customer 3
+[original-trace-id] queuing job for active Customer 4
+[original-trace-id] perform(1)
+[original-trace-id] perform(2)
+[original-trace-id] perform(3)
+[original-trace-id] perform(4)
+[original-trace-id] checking Customer 1
+[original-trace-id] Sending Customer 1 the welcome email
+[original-trace-id] checking Customer 4
+[original-trace-id] Sending Customer 4 the welcome email
+[original-trace-id] checking Customer 2
+[original-trace-id] Customer 2 already got the welcome email
+[original-trace-id] checking Customer 3
+[original-trace-id] Customer 3 already got the welcome email
+```
+
+Searching your logs for `original-trace-id` would show everything. Imagine you had more than 4 customers.  This might not be very helpful.  Instead, you may want
+to reset the trace id for each job.  You can do this with `TraceId.reset!`, which yields the old trace id allowing you connect the two traces:
+
+```ruby
+class SendWelcomeEmailIfNeededJob
+
+  include TraceId::Method
+
+  def perform(customer_id)
+    TraceId.reset! do |old_trace_id|
+      Rails.logger.info "Changing trace id from '#{old_trace_id}' to '#{trace_id}'"
+    end
+    Rails.logger.info "[#{trace_id}] perform(#{customer_id})"
+    customer = Customer.find(customer_id)
+    ActiveCustomers.new.send_welcome_email_if_needed(customer)
+  end
+end
+```
+
+Now the logs look like so:
+
+```
+[original-trace-id] queuing job for active Customer 1
+[original-trace-id] queuing job for active Customer 2
+[original-trace-id] queuing job for active Customer 3
+[original-trace-id] queuing job for active Customer 4
+Changing trace id from 'original-trace-id' to 'new-trace-id-1'
+Changing trace id from 'original-trace-id' to 'new-trace-id-2'
+Changing trace id from 'original-trace-id' to 'new-trace-id-3'
+Changing trace id from 'original-trace-id' to 'new-trace-id-4'
+[new-trace-id-1] perform(1)
+[new-trace-id-2] perform(2)
+[new-trace-id-3] perform(3)
+[new-trace-id-4] perform(4)
+[new-trace-id-1] checking Customer 1
+[new-trace-id-1] Sending Customer 1 the welcome email
+[new-trace-id-4] checking Customer 4
+[new-trace-id-4] Sending Customer 4 the welcome email
+[new-trace-id-2] checking Customer 2
+[new-trace-id-2] Customer 2 already got the welcome email
+[new-trace-id-3] checking Customer 3
+[new-trace-id-3] Customer 3 already got the welcome email
+```
+
+If you want to understand what happened for Customer 4, you'd first search for `original-trace-id` and see this:
+
+```
+[original-trace-id] queuing job for active Customer 1
+[original-trace-id] queuing job for active Customer 2
+[original-trace-id] queuing job for active Customer 3
+[original-trace-id] queuing job for active Customer 4
+Changing trace id from 'original-trace-id' to 'new-trace-id-1'
+Changing trace id from 'original-trace-id' to 'new-trace-id-2'
+Changing trace id from 'original-trace-id' to 'new-trace-id-3'
+Changing trace id from 'original-trace-id' to 'new-trace-id-4'
+```
+
+You can see that for Customer 4 the trace id was changed to `new-trace-id-4`, which if you search for shows you:
+
+```
+Changing trace id from 'original-trace-id' to 'new-trace-id-4'
+[new-trace-id-4] perform(4)
+[new-trace-id-4] checking Customer 4
+[new-trace-id-4] Sending Customer 4 the welcome email
+```
+
+## Contributing
+
+Happy to look at and accept:
 
 * Bugfixes
 * Adapters to put TraceId into more systems that need it
