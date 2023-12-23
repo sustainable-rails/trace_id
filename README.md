@@ -182,7 +182,7 @@ class SendWelcomeEmailIfNeededJob
 
   def perform(customer_id)
     TraceId.reset! do |old_trace_id|
-      Rails.logger.info "Changing trace id from '#{old_trace_id}' to '#{trace_id}'"
+      Rails.logger.info "Changing trace id from '#{old_trace_id}' to '#{trace_id}' in job for Customer #{customer_id}"
     end
     Rails.logger.info "[#{trace_id}] perform(#{customer_id})"
     customer = Customer.find(customer_id)
@@ -198,10 +198,10 @@ Now the logs look like so:
 [original-trace-id] queuing job for active Customer 2
 [original-trace-id] queuing job for active Customer 3
 [original-trace-id] queuing job for active Customer 4
-Changing trace id from 'original-trace-id' to 'new-trace-id-1'
-Changing trace id from 'original-trace-id' to 'new-trace-id-2'
-Changing trace id from 'original-trace-id' to 'new-trace-id-3'
-Changing trace id from 'original-trace-id' to 'new-trace-id-4'
+Changing trace id from 'original-trace-id' to 'new-trace-id-1' in job for Customer 1
+Changing trace id from 'original-trace-id' to 'new-trace-id-2' in job for Customer 2
+Changing trace id from 'original-trace-id' to 'new-trace-id-3' in job for Customer 3
+Changing trace id from 'original-trace-id' to 'new-trace-id-4' in job for Customer 4
 [new-trace-id-1] perform(1)
 [new-trace-id-2] perform(2)
 [new-trace-id-3] perform(3)
@@ -223,16 +223,16 @@ If you want to understand what happened for Customer 4, you'd first search for `
 [original-trace-id] queuing job for active Customer 2
 [original-trace-id] queuing job for active Customer 3
 [original-trace-id] queuing job for active Customer 4
-Changing trace id from 'original-trace-id' to 'new-trace-id-1'
-Changing trace id from 'original-trace-id' to 'new-trace-id-2'
-Changing trace id from 'original-trace-id' to 'new-trace-id-3'
-Changing trace id from 'original-trace-id' to 'new-trace-id-4'
+Changing trace id from 'original-trace-id' to 'new-trace-id-1' in job for Customer 1
+Changing trace id from 'original-trace-id' to 'new-trace-id-2' in job for Customer 2
+Changing trace id from 'original-trace-id' to 'new-trace-id-3' in job for Customer 3
+Changing trace id from 'original-trace-id' to 'new-trace-id-4' in job for Customer 4
 ```
 
 You can see that for Customer 4 the trace id was changed to `new-trace-id-4`, which if you search for shows you:
 
 ```
-Changing trace id from 'original-trace-id' to 'new-trace-id-4'
+Changing trace id from 'original-trace-id' to 'new-trace-id-4' in job for Customer 4
 [new-trace-id-4] perform(4)
 [new-trace-id-4] checking Customer 4
 [new-trace-id-4] Sending Customer 4 the welcome email
